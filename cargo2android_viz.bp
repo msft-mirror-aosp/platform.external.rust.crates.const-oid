@@ -1,0 +1,4 @@
+visibility: [
+     "//external/rust/crates/der:__subpackages__",
+     "//external/rust/crates/x509-cert:__subpackages__",
+]
