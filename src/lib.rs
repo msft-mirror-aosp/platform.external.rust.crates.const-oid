@@ -2,12 +2,20 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 #![doc(
-    html_logo_url = "https://raw.githubusercontent.com/RustCrypto/meta/master/logo.svg",
-    html_favicon_url = "https://raw.githubusercontent.com/RustCrypto/meta/master/logo.svg",
-    html_root_url = "https://docs.rs/const-oid/0.9.0"
+    html_logo_url = "https://raw.githubusercontent.com/RustCrypto/media/6ee8e381/logo.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/RustCrypto/media/6ee8e381/logo.svg"
 )]
-#![forbid(unsafe_code, clippy::unwrap_used)]
-#![warn(missing_docs, rust_2018_idioms)]
+#![forbid(unsafe_code)]
+#![warn(
+    clippy::integer_arithmetic,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_used,
+    missing_docs,
+    rust_2018_idioms,
+    unused_lifetimes,
+    unused_qualifications
+)]
 
 /// Local Android change: Use std to allow building as a dylib.
 #[cfg(android_dylib)]
@@ -15,6 +23,9 @@ extern crate std;
 
 #[cfg(feature = "std")]
 extern crate std;
+
+#[macro_use]
+mod checked;
 
 mod arcs;
 mod encoder;
@@ -37,6 +48,22 @@ use core::{fmt, str::FromStr};
 pub trait AssociatedOid {
     /// The OID associated with this type.
     const OID: ObjectIdentifier;
+}
+
+/// A trait which associates a dynamic, `&self`-dependent OID with a type,
+/// which may change depending on the type's value.
+///
+/// This trait is object safe and auto-impl'd for any types which impl
+/// [`AssociatedOid`].
+pub trait DynAssociatedOid {
+    /// Get the OID associated with this value.
+    fn oid(&self) -> ObjectIdentifier;
+}
+
+impl<T: AssociatedOid> DynAssociatedOid for T {
+    fn oid(&self) -> ObjectIdentifier {
+        T::OID
+    }
 }
 
 /// Object identifier (OID).
@@ -89,13 +116,7 @@ impl ObjectIdentifier {
     pub const fn new_unwrap(s: &str) -> Self {
         match Self::new(s) {
             Ok(oid) => oid,
-            Err(Error::ArcInvalid { .. } | Error::ArcTooBig) => panic!("OID contains invalid arc"),
-            Err(Error::Base128) => panic!("OID contains arc with invalid base 128 encoding"),
-            Err(Error::DigitExpected { .. }) => panic!("OID expected to start with digit"),
-            Err(Error::Empty) => panic!("OID value is empty"),
-            Err(Error::Length) => panic!("OID length invalid"),
-            Err(Error::NotEnoughArcs) => panic!("OID requires minimum of 3 arcs"),
-            Err(Error::TrailingDot) => panic!("OID ends with invalid trailing '.'"),
+            Err(err) => err.panic(),
         }
     }
 
@@ -225,11 +246,39 @@ impl fmt::Display for ObjectIdentifier {
         for (i, arc) in self.arcs().enumerate() {
             write!(f, "{}", arc)?;
 
-            if i < len - 1 {
-                write!(f, ".")?;
+            if let Some(j) = i.checked_add(1) {
+                if j < len {
+                    write!(f, ".")?;
+                }
             }
         }
 
         Ok(())
+    }
+}
+
+// Implement by hand because the derive would create invalid values.
+// Use the constructor to create a valid oid with at least 3 arcs.
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for ObjectIdentifier {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let first = u.int_in_range(0..=arcs::ARC_MAX_FIRST)?;
+        let second = u.int_in_range(0..=arcs::ARC_MAX_SECOND)?;
+        let third = u.arbitrary()?;
+
+        let mut oid = Self::from_arcs([first, second, third])
+            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+
+        for arc in u.arbitrary_iter()? {
+            oid = oid
+                .push_arc(arc?)
+                .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+        }
+
+        Ok(oid)
+    }
+
+    fn size_hint(depth: usize) -> (usize, Option<usize>) {
+        (Arc::size_hint(depth).0.saturating_mul(3), None)
     }
 }
